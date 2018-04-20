@@ -38,25 +38,28 @@ def wait_element2(web_driver, locator):
     )
     return element
 
+
 # ----------------------------------------------------------------------------------------------------------
 # 要素読み込み待ち
 # ----------------------------------------------------------------------------------------------------------
-def element_wait(web_driver, locator):
+def wait_element(web_driver, locator):
     element = WebDriverWait(web_driver, waitSecond).until(
         # lambda x: x.find_element_by_id(elementID)
         # EC.presence_of_element_located(locator)
         EC.visibility_of_element_located(locator)
     )
     return element
+
+
 # ----------------------------------------------------------------------------------------------------------
 # 要素読み込み待ち
 # ----------------------------------------------------------------------------------------------------------
-def wait_element(web_driver, locator):
+def element_wait(web_driver, locator):
     ele = None
     i = 0
     while (ele == None):
         try:
-            ele = element_wait(web_driver, locator)
+            ele = wait_element(web_driver, locator)
         except Exception as ex:
             web_driver.implicitly_wait(1)
             print(type(ex))
@@ -64,6 +67,7 @@ def wait_element(web_driver, locator):
                 return None
             i += 1
     return ele
+
 
 # ----------------------------------------------------------------------------------------------------------
 # webDriver 初期化
@@ -140,6 +144,8 @@ def main():
     logon_to_kairi(driver)
     # 部署一覧取得
     tpl_busho = busho_get(driver)
+    # 不要部署（topのサンコー、33その他,-99退職)
+    tpl_busho = list(filter(lambda x: x[0] not in ["1", "33", "-99"], tpl_busho))
 
     # sys.exit()  # 途中終了
 
@@ -150,29 +156,38 @@ def main():
     while len(tpl_busho) != 0:
         print("start", len(tpl_busho))
         for key, val in tpl_busho:
+            members = []
             try:
                 # 部署クリック
                 locator = (By.XPATH, "//select[@name='org_list']/option[@value='" + key + "']")
                 ele = wait_element(driver, locator)
                 if ele == None:
                     raise Exception("None error!")
-                driver.implicitly_wait(1)  # seconds
                 ele.click()
-                print(val)
-                """
+                time.sleep(0.3)
                 locator = (By.XPATH, "//table[@class='layout']/tbody/tr/td/ul/li/a")
                 if wait_element(driver, locator) != None:
                     tags = driver.find_elements_by_xpath(locator[1])
-                    members = list(map(lambda x: x.text.replace("◎", "").strip(), tags))
-                    member_list.append({val : members})
-                print(val, len(member_list))
-                """
-                remove_keys.append(key)
+                    if len(tags) < 1:
+                        raise Exception("None error!")
+
+                    members = list(map(lambda x: (x.text.replace("◎", "").strip().split('  '))[0], tags))
+                    member_list.append({val: members})
+                else:
+                    raise Exception("None error!")
+                print(val)
+                print(val, members)
             except Exception as e:
+                # 商品本部、営業部には今のところ人がいない
                 print(type(e))
+                print("oontinue", val)
+            finally:
+                remove_keys.append(key)
 
         tpl_busho = list(filter(lambda x: x[0] not in remove_keys, tpl_busho))
         print("end", len(tpl_busho))
+
+    print("member_list", member_list)
 
     # ここから先は、必ず一度は固まるがこのまま作る
 
