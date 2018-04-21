@@ -1,6 +1,8 @@
 import functools
 
-
-name = '松永\u3000克彦  一般'
-arr = (name.split('  '))[0]
-print(arr)
+list = ["A", "B", "C", "D", "E"]
+x = list.pop(0)
+print(x)
+print(list)
+list.append(x)
+print(list)
