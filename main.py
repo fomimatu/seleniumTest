@@ -11,11 +11,15 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.select import Select
 import member as m
+from datetime import datetime
+import pickle
+import json
+import random
+
+from json import JSONEncoder
 
 waitSecond = 3  # 待機秒 (デバッグモードの時は長めにする）
 waitRetry = 3
-
-
 
 # ----------------------------------------------------------------------------------------------------------
 # ページ読み込み待ち
@@ -136,6 +140,7 @@ def busho_get(driver):
     return list(zip(idx_list, busho_list))
 
 
+
 # ----------------------------------------------------------------------------------------------------------
 # 名前リスト取得
 # <params> webDriver
@@ -145,11 +150,12 @@ def busho_get(driver):
 def name_get(driver, tpl_busho):
     # 部署から名前一覧取得
     remove_keys = []
-    members = []
+    memberList = []
     while len(tpl_busho) != 0:
         print("start", len(tpl_busho))
         for key, val in tpl_busho:
             members_tmp = []
+            flg = True
             try:
                 # 部署クリック
                 locator = (By.XPATH, "//select[@name='org_list']/option[@value='" + key + "']")
@@ -157,35 +163,41 @@ def name_get(driver, tpl_busho):
                 if ele == None:
                     raise Exception("None error!")
                 ele.click()
-                time.sleep(0.3)
+                time.sleep(0.5)
                 locator = (By.XPATH, "//table[@class='layout']/tbody/tr/td/ul/li/a")
                 if wait_element(driver, locator) != None:
                     tags = driver.find_elements_by_xpath(locator[1])
                     if len(tags) < 1:
                         raise Exception("None error!")
-                    members_tmp = list(map(lambda x: (x.text.replace("◎", "").strip().split('  '))[0], tags))
-                    members.extend(members_tmp)
+                    # 名前のテキスト検索するので、部署名、リーダーマークはつけたまま
+                    # 上はやっぱりやめ。半角、◎をうまく読んでくれないから
+                    members = list(map(lambda x: (x.text.replace("◎", "").strip().split('  '))[0], tags))
+                    memberList.extend([m.MemberData(x, key, val) for x in members])
                 else:
                     raise Exception("None error!")
-                print(val)
-                print(val, members)
+                    flg = False
+                print(val, ":", len(memberList))
 
             except TimeoutException:
-                # 商品本部、営業部には今のところ人がいない
+                # 商品本部、営業部には今のところ人がいない.なのでFLG=TRUEのまま
                 print("not found", val)
             except StaleElementReferenceException:
                 # 画面の準備がまだ、再実行
                 print("oontinue", val)
+                flg = False
                 continue
-            # except WebDriverException:
-            # except Exception as e:
+            except WebDriverException as e:
+                flg = False
+                print(e.args, val)
+            except Exception as e:
+                flg = False
+                print(e.args, val)
             finally:
-                remove_keys.append(key)
-
+                if flg:
+                    remove_keys.append(key)
         tpl_busho = list(filter(lambda x: x[0] not in remove_keys, tpl_busho))
-        print("end", len(tpl_busho))
-
-    return members
+        print("member_end")
+    return memberList
 
 
 # ----------------------------------------------------------------------------------------------------------
@@ -243,55 +255,61 @@ def shosai_get_input(members):
 
 # ----------------------------------------------------------------------------------------------------------
 # 名前リスト詳細取得
-# 何百回と繰り返し固まるのは確実なので、最初からアクセスする
-# <params> list[名前]
+# 何百回と繰り返し固まるのは確実なので、ここで完結できるように最初からアクセスする
+# <params> list[ MemberData ]
 # <return> list[ MemberData ]
 # ----------------------------------------------------------------------------------------------------------
-def shosai_get(members):
+def shosai_get(member_list):
     driver = None
     driver = driver_init(driver)
     # 認証
     logon_to_kairi(driver)
-    memberList = []
-    while(len(members) > 0):
-        try:
-            time.sleep(0.5)
-            member = members.pop(0)
-            ele = driver.find_element_by_name('search_member_text')
-            ele.clear()
-            ele.send_keys(member)
-            driver.find_element_by_link_text("検索").click()
-            locator = (By.XPATH, "//th[text()='検索結果']/following-sibling::td/ul/li/a")
-            ele = wait_element(driver, locator)
-            if ele == None:
-                raise Exception("None error!")
-            ele.click()
-            locator = (By.NAME, 'member_kanri_code')
-            ele = wait_element(driver, locator)
-            if ele == None:
-                raise Exception("None error!")
-            #
-            o = m.MemberData()
-            o.shainCD = driver.find_element_by_name('member_kanri_code').get_attribute('value')
-            o.shainNM = driver.find_element_by_name('member_name').get_attribute('value')
-            o.kana = driver.find_element_by_name('member_name_kana').get_attribute('value')
-            o.mail = driver.find_element_by_name('address_mail').get_attribute('value')
-            o.naisen = driver.find_element_by_name('address_ext_tel').get_attribute('value')
-            o.userID = driver.find_element_by_name('member_login_user_id').get_attribute('value')
-            o.section = Select(driver.find_element_by_id('main_org_id')).first_selected_option.text.strip()
-            o.post = Select(driver.find_element_by_id('main_post_id')).first_selected_option.text.strip()
-            #
-            driver.find_element_by_link_text("閉じる").click()
-            #
-            memberList.append(o)
-            print(len(members), o.shainNM)
-        except Exception as ex:
-            print(type(ex))
-            members.append(member)  # 失敗したらメンバーは戻す
-            print(len(memberList))
-            driver.implicitly_wait(1)  # seconds
-            driver.save_screenshot('d:/tmp/pythonTest/search_results.png')
-            driver.quit()
+    # 巡回
+    old_sectionCD = ""
+    while (any(x.accessTime == None for x in member_list)):
+        for mem in member_list:
+            try:
+                # 部署が変わっていたら
+                if mem.sectionCD != old_sectionCD:
+                    # 部署クリック
+                    locator = (By.XPATH, "//select[@name='org_list']/option[@value='" + mem.sectionCD + "']")
+                    ele = wait_element(driver, locator)
+                    if ele == None:
+                        raise Exception("None error!")
+                    ele.click()
+                    time.sleep(0.3)
+                # 名前をクリック
+                locator = (By.XPATH, "//table[@class='layout']/tbody/tr/td/ul/li/a[contains(text(),'" + mem.shainNM + "')]")
+                ele = wait_element(driver, locator)
+                if ele != None:
+                    ele.click()
+                    time.sleep(0.1)
+                    mem.shainCD = driver.find_element_by_name('member_kanri_code').get_attribute('value')
+                    # mem.shainNM = driver.find_element_by_name('member_name').get_attribute('value')
+                    mem.kana = driver.find_element_by_name('member_name_kana').get_attribute('value')
+                    mem.mail = driver.find_element_by_name('address_mail').get_attribute('value')
+                    mem.naisen = driver.find_element_by_name('address_ext_tel').get_attribute('value')
+                    mem.userID = driver.find_element_by_name('member_login_user_id').get_attribute('value')
+                    mem.section = Select(driver.find_element_by_id('main_org_id')).first_selected_option.text.strip()
+                    mem.post = Select(driver.find_element_by_id('main_post_id')).first_selected_option.text.strip()
+                    mem.accessTime = datetime.now().strftime("%Y/%m/%d %H:%M:%S")
+                    #
+                    driver.find_element_by_link_text("閉じる").click()
+                    print(mem.section, mem.shainNM)
+                else:
+                    raise Exception("None error!")
+                old_sectionCD = mem.sectionCD
+            except:
+                driver.close()
+                return False, member_list
+    driver.close()
+    return True, member_list
+
+
+
+
+
+
 
 
 
@@ -299,6 +317,8 @@ def shosai_get(members):
 # Main
 # ----------------------------------------------------------------------------------------------------------
 def main():
+    start = time.time()
+
     driver = None
     driver = driver_init(driver)
 
@@ -309,75 +329,43 @@ def main():
     # 不要部署（topのサンコー、33その他,-99退職)
     lst_tpl_busho = list(filter(lambda x: x[0] not in ["1", "33", "-99"], lst_tpl_busho))
 
-    members = name_get(driver, lst_tpl_busho)
-    # 重複削除、順番変動
-    members = list(set(members))
-    print("重複削除、順番変動かも", len(members))
+    member_list = name_get(driver, lst_tpl_busho)
+
+    print("メンバー取得数：", len(member_list))
     driver.quit()
     time.sleep(1)
 
+    # pickle保存
+    with open('d:/tmp/pcl_receipe0.bin', 'wb') as sw:
+        pickle.dump(member_list, sw)
+
     # 何度も固まるから、一つの関数で完結させる
-    shosai_get(members)
+    flg = False
+    rCount = 0
+    while flg == False:
+        result = shosai_get(member_list)
+        flg = result[0]
+        member_list = result[1]
+        print("retry", rCount)
+        rCount += 1
+        time.sleep(1)
+
+    # pickle保存
+    with open('d:/tmp/pcl_receipe.bin', 'wb') as sw:
+        pickle.dump(member_list, sw)
+
+    # JSON保存
+    with open('d:/tmp/receipe.json', 'w') as sw:
+        json_string = json.dumps([ob.__dict__ for ob in member_list], sort_keys=True, ensure_ascii=False, indent=2)
+        sw.write(json_string)
+
+    # 処理時間
+    print(time.time() - start)
 
     # sys.exit()  # 途中終了
-
-    """
-    # 部署から名前一覧取得
-    # ここから巡回中落ちる場合がある
-    member_list = []
-    remove_keys = []
-    while len(tpl_busho) != 0:
-        print("start", len(tpl_busho))
-        for key, val in tpl_busho:
-            members = []
-            try:
-                # 部署クリック
-                locator = (By.XPATH, "//select[@name='org_list']/option[@value='" + key + "']")
-                ele = wait_element(driver, locator)
-                if ele == None:
-                    raise Exception("None error!")
-                ele.click()
-                time.sleep(0.3)
-                locator = (By.XPATH, "//table[@class='layout']/tbody/tr/td/ul/li/a")
-                if wait_element(driver, locator) != None:
-                    tags = driver.find_elements_by_xpath(locator[1])
-                    if len(tags) < 1:
-                        raise Exception("None error!")
-
-                    members = list(map(lambda x: (x.text.replace("◎", "").strip().split('  '))[0], tags))
-                    member_list.append({val: members})
-                else:
-                    raise Exception("None error!")
-                print(val)
-                print(val, members)
-
-            except TimeoutException:
-                # 商品本部、営業部には今のところ人がいない
-                print("not found", val)
-            except StaleElementReferenceException:
-                # 画面の準備がまだ
-                print("oontinue", val)
-                continue
-            # except WebDriverException:
-            # except Exception as e:
-            finally:
-                remove_keys.append(key)
-
-        tpl_busho = list(filter(lambda x: x[0] not in remove_keys, tpl_busho))
-        print("end", len(tpl_busho))
-
-    print("member_list", member_list)
-
-    # ここから先は、必ず一度は固まるがこのまま作る
-    """
-
     # スクリーンショットをとる。
-    driver.implicitly_wait(2)  # seconds
-    driver.save_screenshot('d:/tmp/pythonTest/search_results.png')
-
-    driver.quit()
-
-
+    # driver.implicitly_wait(2)  # seconds
+    # driver.save_screenshot('d:/tmp/pythonTest/search_results.png')
 
 # ----------------------------------------------------------------------------------------------------------
 # スタート
