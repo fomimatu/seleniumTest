@@ -268,6 +268,8 @@ def shosai_get(member_list):
     old_sectionCD = ""
     while (any(x.accessTime == None for x in member_list)):
         for mem in member_list:
+            if mem.accessTime != None:
+                continue
             try:
                 # 部署が変わっていたら
                 if mem.sectionCD != old_sectionCD:
@@ -305,12 +307,35 @@ def shosai_get(member_list):
     driver.close()
     return True, member_list
 
+# ----------------------------------------------------------------------------------------------------------
+# リスト重複削除
+# KEYは社員名
+# <params> list[ MemberData ]
+# <return> list[ MemberData ]
+# ----------------------------------------------------------------------------------------------------------
+# 重複削除
+def remove_duplicates(x):
+    y=[]
+    old = ""
+    for i in x:
+        if old != i.shainNM:
+            y.append(i)
+        old = i.shainNM
+    return y
+# ----------------------------------------------------------------------------------------------------------
+# TEST
+# ----------------------------------------------------------------------------------------------------------
+def test_sort():
+    with open('d:/tmp/pcl_receipe.bin', 'rb') as sr:
+        member_list = pickle.load(sr)
+    tmp_member_list = remove_duplicates(sorted(member_list, key=lambda x: x.shainNM))
+    member_list2 = sorted(tmp_member_list, key=lambda x: member_list.index(x))
 
 
+    # xxx = remove_duplicates(sorted(memberList, key=lambda x: x.shainNM))
+    # zzz = sorted(xxx, key=lambda x: memberList.index(x))
 
-
-
-
+    print(member_list2)
 
 
 # ----------------------------------------------------------------------------------------------------------
@@ -349,6 +374,10 @@ def main():
         print("retry", rCount)
         rCount += 1
         time.sleep(1)
+
+    # 名前重複削除（部署またがり分削除）
+    tmp_member_list = remove_duplicates(sorted(member_list, key=lambda x: x.shainNM))
+    member_list = sorted(tmp_member_list, key=lambda x: member_list.index(x))
 
     # pickle保存
     with open('d:/tmp/pcl_receipe.bin', 'wb') as sw:
